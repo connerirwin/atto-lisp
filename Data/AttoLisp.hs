@@ -34,7 +34,6 @@ import Blaze.Text (double, integral)
 import Control.Applicative
 import Control.DeepSeq (NFData(..))
 import Control.Monad
-import Data.Attoparsec.Number (Number(..))
 import Data.Data
 import Data.Int  ( Int8, Int16, Int32, Int64 )
 import Data.List ( foldl' )
@@ -54,6 +53,7 @@ import qualified Data.Attoparsec.Zepto as Z
 import qualified Blaze.ByteString.Builder as Blaze
 import qualified Blaze.ByteString.Builder.Char.Utf8 as Blaze
 import qualified Data.Map as M
+import qualified Data.Scientific as S
 
 -- | A Lisp expression (S-expression).
 --
@@ -65,7 +65,7 @@ import qualified Data.Map as M
 data Lisp
   = Symbol T.Text   -- ^ A symbol (including keyword)
   | String T.Text   -- ^ A string.
-  | Number Number   -- ^ A number
+  | Number S.Scientific   -- ^ A number
   | List [Lisp]     -- ^ A proper list: @(foo x 42)@
   | DotList [Lisp] Lisp  -- ^ A list with a non-nil tail: @(foo x
                          -- . 42)@.  The list argument must be
@@ -464,14 +464,11 @@ instance FromLisp [Char] where
   {-# INLINE parseLisp #-}
 
 instance ToLisp Double where
-  toLisp = Number . D
+  toLisp = Number . realToFrac
   {-# INLINE toLisp #-}
 
 instance FromLisp Double where
-  parseLisp (Number n) =
-    case n of
-      D d -> pure d
-      I i -> pure (fromIntegral i)
+  parseLisp (Number n) = pure $ S.toRealFloat n
   parseLisp e | isNull e = pure (0/0)  -- useful?
   parseLisp e = typeMismatch "Double" e
   {-# INLINE parseLisp #-}
@@ -481,21 +478,18 @@ instance ToLisp Float where
   {-# INLINE toLisp #-}
 
 instance FromLisp Float where
-  parseLisp (Number n) =
-    case n of
-      D d -> pure (fromRational (toRational d))
-      I i -> pure (fromIntegral i)
+  parseLisp (Number n) = pure $ S.toRealFloat n
   parseLisp e | isNull e = pure (0/0)  -- useful?
   parseLisp e = typeMismatch "Float" e
   {-# INLINE parseLisp #-}
 
-instance ToLisp Number where
+instance ToLisp S.Scientific where
   toLisp = Number
   {-# INLINE toLisp #-}
 
-instance FromLisp Number where
+instance FromLisp S.Scientific where
   parseLisp (Number n) = pure n
-  parseLisp e | isNull e = pure (D (0/0))  -- useful?
+  parseLisp e | isNull e = pure (0/0)  -- useful?
   parseLisp e = typeMismatch "Number" e
   {-# INLINE parseLisp #-}
 
@@ -504,10 +498,7 @@ instance ToLisp (Ratio Integer) where
   {-# INLINE toLisp #-}
 
 instance FromLisp (Ratio Integer) where
-  parseLisp (Number n) =
-    case n of
-      D d -> pure (toRational d)
-      I i -> pure (fromIntegral i)
+  parseLisp (Number n) = pure $ realToFrac n
   parseLisp e = typeMismatch "Ratio Integer" e
   {-# INLINE parseLisp #-}
 
@@ -660,7 +651,7 @@ atom = number <|> symbol
 number :: A.Parser Lisp
 number = do
   sym <- AC.takeWhile1 (not . terminatingChar)
-  case A.parseOnly AC.number sym of
+  case A.parseOnly AC.scientific sym of
       Left _  -> fail "Not a number"
       Right n -> return (Number n)
 
@@ -838,9 +829,10 @@ enc_list [] tl = fromChar '(' `mappend` tl
 enc_list (x:xs) tl = fromChar '(' `mappend` fromLispExpr x `mappend` foldr f tl xs
  where f e t = fromChar ' ' `mappend` fromLispExpr e `mappend` t
 
-fromNumber :: Number -> Blaze.Builder
-fromNumber (I i) = integral i
-fromNumber (D d) = double d
+fromNumber :: S.Scientific -> Blaze.Builder
+fromNumber n = case S.floatingOrInteger n of
+    Left f -> double f
+    Right i -> integral (i :: Integer) -- TODO: Not sure I understand what's going on here
 
 encode :: ToLisp a => a -> Lazy.ByteString
 encode = Blaze.toLazyByteString . fromLispExpr . toLisp
